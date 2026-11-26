@@ -5,6 +5,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 
+# ===== SET TO "true" TO TEST, "false" FOR PRODUCTION =====
+TEST_MODE = "true"
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 SYMBOL = "XAUUSD=X"
@@ -22,20 +25,16 @@ def get_data(interval="5m", period="5d"):
     df = yf.Ticker(SYMBOL).history(period=period, interval=interval).dropna()
     if len(df) < 60:
         return None
-    
     df["SMA20"] = df["Close"].rolling(20).mean()
     df["SMA50"] = df["Close"].rolling(50).mean()
-    
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = -delta.where(delta < 0, 0).rolling(14).mean()
     df["RSI"] = 100 - (100 / (1 + gain / loss))
-    
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
     df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
-    
     recent = df.tail(50)
     return {
         "price": round(float(df["Close"].iloc[-1]), 2),
@@ -58,74 +57,46 @@ def get_hourly_trend():
     return "BULLISH" if price > sma else "BEARISH"
 
 def generate_signal(data_5m, hourly_trend):
-    p = data_5m["price"]
-    rsi = data_5m["rsi"]
-    sma20 = data_5m["sma20"]
-    sma50 = data_5m["sma50"]
-    atr = data_5m["atr"]
-    sup = data_5m["support"]
-    res = data_5m["resistance"]
-    
+    p = data_5m["price"]; rsi = data_5m["rsi"]; sma20 = data_5m["sma20"]
+    sma50 = data_5m["sma50"]; atr = data_5m["atr"]; sup = data_5m["support"]; res = data_5m["resistance"]
     if atr <= 0:
         return None
-    
     hour = datetime.now(timezone.utc).hour
-    if not (13 <= hour <= 21):
+    if TEST_MODE != "true" and not (13 <= hour <= 21):
         print(f"Outside trading hours: {hour} UTC")
         return None
-    
     if p > sma20 > sma50 and 45 <= rsi <= 65 and hourly_trend == "BULLISH":
-        sl = round(p - 1.5 * atr, 2)
-        tp1 = round(p + 2 * atr, 2)
-        tp2 = round(p + 3.5 * atr, 2)
+        sl = round(p - 1.5 * atr, 2); tp1 = round(p + 2 * atr, 2); tp2 = round(p + 3.5 * atr, 2)
         rr = (tp2 - p) / (p - sl)
         if rr >= 2.0:
-            return {"type": "🟢 BUY — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"5m + 1H bullish alignment. RSI {rsi}"}
-    
+            return {"type": "🟢 BUY — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"5m + 1H bullish alignment. RSI {rsi}"}
     if p < sma20 < sma50 and 35 <= rsi <= 55 and hourly_trend == "BEARISH":
-        sl = round(p + 1.5 * atr, 2)
-        tp1 = round(p - 2 * atr, 2)
-        tp2 = round(p - 3.5 * atr, 2)
+        sl = round(p + 1.5 * atr, 2); tp1 = round(p - 2 * atr, 2); tp2 = round(p - 3.5 * atr, 2)
         rr = (p - tp2) / (sl - p)
         if rr >= 2.0:
-            return {"type": "🔴 SELL — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"5m + 1H bearish alignment. RSI {rsi}"}
-    
+            return {"type": "🔴 SELL — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"5m + 1H bearish alignment. RSI {rsi}"}
     if p <= sup * 1.003 and rsi < 35 and hourly_trend != "BEARISH":
-        sl = round(sup - 0.8 * atr, 2)
-        tp1 = round((sup + res) / 2, 2)
-        tp2 = round(res, 2)
+        sl = round(sup - 0.8 * atr, 2); tp1 = round((sup + res) / 2, 2); tp2 = round(res, 2)
         rr = (tp2 - p) / (p - sl)
         if rr >= 2.0:
-            return {"type": "🟢 BUY — Support Bounce", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"Near support ${sup}. Oversold RSI {rsi}"}
-    
+            return {"type": "🟢 BUY — Support Bounce", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"Near support ${sup}. Oversold RSI {rsi}"}
     if p >= res * 0.997 and rsi > 65 and hourly_trend != "BULLISH":
-        sl = round(res + 0.8 * atr, 2)
-        tp1 = round((sup + res) / 2, 2)
-        tp2 = round(sup, 2)
+        sl = round(res + 0.8 * atr, 2); tp1 = round((sup + res) / 2, 2); tp2 = round(sup, 2)
         rr = (p - tp2) / (sl - p)
         if rr >= 2.0:
-            return {"type": "🔴 SELL — Resistance Reject", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"Near resistance ${res}. Overbought RSI {rsi}"}
-    
+            return {"type": "🔴 SELL — Resistance Reject", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"Near resistance ${res}. Overbought RSI {rsi}"}
     return None
 
 def main():
     print("Gold bot starting...")
-    
     data_5m = get_data("5m", "5d")
     if not data_5m:
         send_telegram("⚠️ Gold bot: no market data")
         return
-    
     hourly_trend = get_hourly_trend()
     signal = generate_signal(data_5m, hourly_trend)
-    
     if signal:
-        msg = f"""
-🟡 <b>XAU/USD SIGNAL</b>
+        msg = f"""🟡 <b>XAU/USD SIGNAL</b>
 
 📌 <b>Current running price:</b> ${data_5m['price']}
 🕒 Data time: {data_5m['time']}
@@ -148,10 +119,23 @@ def main():
 💡 {signal['reason']}
 
 ⚠️ Confirm with your TradingView live price.
-⚠️ Risk 1-2% only. Not financial advice.
-"""
+⚠️ Risk 1-2% only. Not financial advice."""
         send_telegram(msg)
         print("Signal sent")
+    elif TEST_MODE == "true":
+        # Heartbeat so you KNOW Telegram delivery works, even with no setup
+        msg = f"""🤖 <b>Bot Test Heartbeat</b>
+
+✅ Telegram delivery is WORKING.
+📌 Current running price: ${data_5m['price']}
+🕒 Data time: {data_5m['time']}
+📊 1H Trend: {hourly_trend}
+📊 RSI: {data_5m['rsi']}
+
+No valid setup right now (normal).
+Real signals will fire during 13:00-21:00 UTC (6:30 PM - 2:30 AM IST)."""
+        send_telegram(msg)
+        print("Heartbeat sent")
     else:
         print(f"No signal. Price: ${data_5m['price']} | 1H: {hourly_trend} | RSI: {data_5m['rsi']}")
 
