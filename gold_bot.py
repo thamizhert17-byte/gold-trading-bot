@@ -128,7 +128,6 @@ def check_fundamental_alerts():
 def generate_perfect_signal(data):
     p = data["price"]; ema9 = data["ema9"]; ema21 = data["ema21"]
     sma50 = data["sma50"]; rsi = data["rsi"]; atr = data["atr"]
-    sup = data["support"]; res = data["resistance"]
     
     if atr <= 0 or atr > 20 or np.isnan(rsi):
         return None
@@ -154,19 +153,16 @@ def generate_perfect_signal(data):
 
 # --- 2. AGGRESSIVE SIGNAL (Fallback for 30-min updates) ---
 def generate_aggressive_signal(data):
-    """Generates a scalp trade based on immediate 5m momentum so you always get a signal."""
     p = data["price"]; ema9 = data["ema9"]; atr = data["atr"]
     
     if atr <= 0 or np.isnan(atr): return None
 
-    # Aggressive BUY: Price is above short-term EMA
     if p > ema9:
         sl = round(p - 1.0 * atr, 2)
         tp = round(p + 1.5 * atr, 2)
         return {"type": "⚡ AGGRESSIVE BUY", "entry": p, "sl": sl, "tp1": tp, "tp2": tp,
                 "rr": 1.5, "reason": f"Short-term momentum UP. Scalp setup."}
 
-    # Aggressive SELL: Price is below short-term EMA
     if p < ema9:
         sl = round(p + 1.0 * atr, 2)
         tp = round(p - 1.5 * atr, 2)
@@ -209,8 +205,7 @@ def main():
     signal = generate_perfect_signal(data)
     
     if signal:
-        msg = f"""
-🟡 <b>XAU/USD PERFECT ENTRY</b>
+        msg = f"""🟡 <b>XAU/USD PERFECT ENTRY</b>
 
 {signal['type']}
 💰 <b>Entry:</b> ${signal['entry']}
@@ -220,18 +215,19 @@ def main():
 ⚖️ <b>R:R:</b> 1:{signal['rr']}
 
 📊 RSI: {data['rsi']}
+🧱 Support: ${data['support']}
+🧱 Resistance: ${data['resistance']}
 🕒 Time: {current_time_ist} IST
-⚠️ Verify on TradingView. Risk 1-2%.
-"""
+
+⚠️ Verify on TradingView. Risk 1-2%."""
         send_telegram(msg)
         print("Perfect signal sent")
         
-    # 5. 30-MINUTE AGGRESSIVE UPDATE (Wide window: :00-:09 and :30-:39)
+    # 5. 30-MINUTE AGGRESSIVE UPDATE
     elif now_min < 10 or (30 <= now_min < 40):
         agg_signal = generate_aggressive_signal(data)
         if agg_signal:
-            msg = f"""
-⚡ <b>XAU/USD 30-MIN SCALP</b>
+            msg = f"""⚡ <b>XAU/USD 30-MIN SCALP</b>
 
 {agg_signal['type']}
 💰 <b>Entry:</b> ${agg_signal['entry']}
@@ -239,10 +235,12 @@ def main():
 🎯 <b>TP:</b> ${agg_signal['tp1']}
 ⚖️ <b>R:R:</b> 1:{agg_signal['rr']}
 
-💡 {agg_signal['reason']}
+📊 RSI: {data['rsi']}
+🧱 Support: ${data['support']}
+🧱 Resistance: ${data['resistance']}
 🕒 Time: {current_time_ist} IST
-⚠️ AGGRESSIVE SCALP. Quick book profits.
-"""
+
+⚠️ AGGRESSIVE SCALP. Quick book profits."""
             send_telegram(msg)
             print("Aggressive 30-min signal sent")
     else:
