@@ -69,9 +69,6 @@ def generate_signal(data_5m, hourly_trend):
     if atr <= 0:
         return None
     
-    hour = datetime.now(timezone.utc).hour
-    minute = datetime.now(timezone.utc).minute
-    
     if p > sma20 > sma50 and 45 <= rsi <= 65 and hourly_trend == "BULLISH":
         sl = round(p - 1.5 * atr, 2)
         tp1 = round(p + 2 * atr, 2)
@@ -111,16 +108,13 @@ def generate_signal(data_5m, hourly_trend):
     return None
 
 def check_session_alerts():
-    """Send alerts before major market sessions open"""
     now = datetime.now(timezone.utc)
     hour = now.hour
     minute = now.minute
     
-    # London Open Alert: 8:00 AM UTC (1:30 PM IST) - Alert at 7:45 AM UTC
     if hour == 7 and 45 <= minute <= 50:
         return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 15 minutes until London market opens (1:30 PM IST)\n\n📋 Checklist:\n✅ Check economic calendar for GBP/EUR news\n✅ Review overnight price action\n✅ Identify key support/resistance levels\n✅ Be ready for volatility spike\n\n💡 London session = High liquidity, big moves possible"
     
-    # New York Open Alert: 1:00 PM UTC (6:30 PM IST) - Alert at 12:45 PM UTC
     if hour == 12 and 45 <= minute <= 50:
         return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 15 minutes until NY market opens (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news (NFP, CPI, Fed speeches)\n✅ Review London session trend\n✅ Identify key levels for NY overlap\n✅ Highest volatility time (6:30-10:30 PM IST)\n\n💡 London+NY overlap = Best trading opportunities"
     
@@ -129,14 +123,12 @@ def check_session_alerts():
 def main():
     print("Gold bot starting...")
     
-    # Check for session alerts first
     session_alert = check_session_alerts()
     if session_alert:
         send_telegram(session_alert)
         print("Session alert sent")
         return
     
-    # Get market data
     data_5m = get_data("5m", "5d")
     if not data_5m:
         send_telegram("⚠️ Gold bot: no market data")
