@@ -28,31 +28,15 @@ def check_user_commands():
             text = last_msg.get('text', '').strip().lower()
             msg_date = last_msg.get('date', 0)
             current_time = int(datetime.now(timezone.utc).timestamp())
-            # If message is 'signal' and was sent in the last 15 minutes
+            # If user typed 'signal' in the last 15 minutes
             if text == 'signal' and (current_time - msg_date) < 900:
                 return True
     except Exception as e:
         print(f"Command check error: {e}")
     return False
 
-def get_realtime_quote():
-    """Real-time price from Twelve Data."""
-    try:
-        url = f"https://api.twelvedata.com/quote?symbol={SYMBOL}&apikey={API_KEY}"
-        r = requests.get(url, timeout=10).json()
-        if 'close' in r and float(r['close']) > 0:
-            return {
-                "price": round(float(r['close']), 2),
-                "open": round(float(r['open']), 2),
-                "high": round(float(r['high']), 2),
-                "low": round(float(r['low']), 2)
-            }
-    except Exception as e:
-        print(f"Quote error: {e}")
-    return None
-
-def get_time_series():
-    """Real-time 5-minute candles."""
+def get_realtime_data():
+    """Fetches real-time 5-min candles from Twelve Data."""
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval=5min&outputsize=100&apikey={API_KEY}"
         r = requests.get(url, timeout=10).json()
@@ -66,7 +50,7 @@ def get_time_series():
             df = df.set_index('Time')
             return df
     except Exception as e:
-        print(f"Time series error: {e}")
+        print(f"Data error: {e}")
     return None
 
 def build_indicators(df):
@@ -75,12 +59,10 @@ def build_indicators(df):
     df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
     df['SMA50'] = df['close'].rolling(50).mean()
-    
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = -delta.where(delta < 0, 0).rolling(14).mean()
     df['RSI'] = 100 - (100 / (1 + gain / loss))
-    
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
@@ -99,77 +81,99 @@ def build_indicators(df):
         "resistance": round(float(recent['high'].max()), 2)
     }
 
-def generate_signal(data):
+def check_fundamental_alerts():
+    """Sends alerts at 1:15 PM and 6:15 PM IST."""
+    now = datetime.now(IST)
+    hour = now.hour
+    minute = now.minute
+    
+    if hour == 13 and 14 <= minute <= 16: # 1:15 PM IST
+        return "🇬🇧 <b>FUNDAMENTAL ALERT: LONDON OPEN</b>\n\n⏰ London session starts in 15 mins (1:30 PM IST).\n\n📰 Check News:\n✅ GBP & EUR High Impact News\n✅ European Market Openings\n✅ Overnight Gold Volatility\n\n💡 High volatility expected. Tighten SL if trading."
+    
+    if hour == 18 and 14 <= minute <= 16: # 6:15 PM IST
+        return "🇺🇸 <b>FUNDAMENTAL ALERT: NEW YORK OPEN</b>\n\n⏰ NY session starts in 15 mins (6:30 PM IST).\n\n📰 Check News:\n✅ USD High Impact News (NFP, CPI, Fed)\n✅ US Stock Market Open (S&P 500)\n✅ Gold/USD Correlation\n\n💡 Highest volatility of the day (6:30 PM - 10:30 PM IST)."
+    
+    return None
+
+def generate_perfect_signal(data):
+    """Strict logic to ensure only 3-8 high-quality signals per day."""
     p = data["price"]; ema9 = data["ema9"]; ema21 = data["ema21"]
     sma50 = data["sma50"]; rsi = data["rsi"]; atr = data["atr"]
     sup = data["support"]; res = data["resistance"]
     
-    if atr <= 0:
+    if atr <= 0 or atr > 15: # Filter out dead markets or crazy spikes
         return None
 
-    # 1. BUY: Strong uptrend
-    if p > ema21 > sma50 and ema9 > ema21 and rsi < 75:
+    # 1. TREND FOLLOWING (Best for London/NY Overlap)
+    if p > ema21 > sma50 and ema9 > ema21 and 45 < rsi < 70:
         sl = round(p - 1.5 * atr, 2)
-        tp1 = round(p + 2 * atr, 2); tp2 = round(p + 3.5 * atr, 2)
+        tp1 = round(p + 2 * atr, 2)
+        tp2 = round(p + 3.5 * atr, 2)
         rr = (tp2 - p) / (p - sl)
-        if rr >= 1.5:
-            return {"type": "🟢 BUY (Uptrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
-                    "rr": round(rr, 2), "reason": f"Price > EMA21 > SMA50. RSI {rsi}."}
+        if rr >= 2.0: # Strict R:R
+            return {"type": "🟢 BUY (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Strong Uptrend. RSI {rsi}."}
 
-    # 2. SELL: Strong downtrend
-    if p < ema21 < sma50 and ema9 < ema21 and rsi > 25:
+    if p < ema21 < sma50 and ema9 < ema21 and 30 < rsi < 55:
         sl = round(p + 1.5 * atr, 2)
-        tp1 = round(p - 2 * atr, 2); tp2 = round(p - 3.5 * atr, 2)
+        tp1 = round(p - 2 * atr, 2)
+        tp2 = round(p - 3.5 * atr, 2)
         rr = (p - tp2) / (sl - p)
-        if rr >= 1.5:
-            return {"type": "🔴 SELL (Downtrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
-                    "rr": round(rr, 2), "reason": f"Price < EMA21 < SMA50. RSI {rsi}."}
+        if rr >= 2.0:
+            return {"type": "🔴 SELL (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Strong Downtrend. RSI {rsi}."}
 
-    # 3. BUY: Support bounce
-    if p <= sup * 1.002 and rsi < 35 and p > sma50:
-        sl = round(sup - 0.8 * atr, 2)
+    # 2. REVERSAL (Best for Asian Session or Range-bound markets)
+    if p <= sup * 1.002 and rsi < 30 and p > sma50:
+        sl = round(sup - 0.5 * atr, 2)
         tp1 = round((sup + res) / 2, 2); tp2 = round(res, 2)
         rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0:
-            return {"type": "🟢 BUY (Support Bounce)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
-                    "rr": round(rr, 2), "reason": f"Oversold at support ${sup}."}
+        if rr >= 2.5: # Higher R:R for reversals
+            return {"type": "🟢 BUY (Reversal)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Oversold at Support ${sup}."}
 
-    # 4. SELL: Resistance reject
-    if p >= res * 0.998 and rsi > 65 and p < sma50:
-        sl = round(res + 0.8 * atr, 2)
+    if p >= res * 0.998 and rsi > 70 and p < sma50:
+        sl = round(res + 0.5 * atr, 2)
         tp1 = round((sup + res) / 2, 2); tp2 = round(sup, 2)
         rr = (p - tp2) / (sl - p)
-        if rr >= 2.0:
-            return {"type": "🔴 SELL (Resistance Reject)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
-                    "rr": round(rr, 2), "reason": f"Overbought at resistance ${res}."}
+        if rr >= 2.5:
+            return {"type": "🔴 SELL (Reversal)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Overbought at Resistance ${res}."}
 
     return None
 
 def main():
-    print("Gold bot starting (real-time)...")
+    print("Gold Bot Master Plan Active...")
     current_time_ist = datetime.now(IST).strftime("%I:%M %p")
 
-    # 1. Check if user typed "signal"
+    # 1. USER COMMAND: "signal"
     if check_user_commands():
-        quote = get_realtime_quote()
-        if quote:
-            msg = f"💰 <b>REAL-TIME Gold Price:</b> ${quote['price']}\n🕒 Time: {current_time_ist} IST\n📈 High: ${quote['high']} | 📉 Low: ${quote['low']}"
+        df = get_realtime_data()
+        data = build_indicators(df)
+        if data:
+            msg = f"💰 <b>REAL-TIME PRICE:</b> ${data['price']}\n🕒 Time: {current_time_ist} IST\n📊 RSI: {data['rsi']} | Trend: {'UP' if data['price'] > data['sma50'] else 'DOWN'}"
             send_telegram(msg)
         return
 
-    # 2. Get real-time 5m candles
-    df = get_time_series()
-    data = build_indicators(df)
-    if not data:
-        print("No data available.")
+    # 2. FUNDAMENTAL ALERTS (1:15 PM & 6:15 PM IST)
+    alert = check_fundamental_alerts()
+    if alert:
+        send_telegram(alert)
+        print("Fundamental alert sent")
         return
 
-    # 3. Check for Entry Signals
-    signal = generate_signal(data)
+    # 3. GET DATA & CHECK SIGNALS
+    df = get_realtime_data()
+    data = build_indicators(df)
+    if not data:
+        print("No data.")
+        return
+
+    signal = generate_perfect_signal(data)
     
     if signal:
         msg = f"""
-🟡 <b>XAU/USD ENTRY SIGNAL</b>
+🟡 <b>XAU/USD PERFECT ENTRY</b>
 
 {signal['type']}
 💰 <b>Entry:</b> ${signal['entry']}
@@ -183,13 +187,16 @@ def main():
 ⚠️ Verify on TradingView. Risk 1-2%.
 """
         send_telegram(msg)
-        print("Signal sent")
+        print("Perfect signal sent")
     else:
-        # 4. Quiet 10-min update
-        trend = "UP" if data['price'] > data['sma50'] else "DOWN"
-        msg = f"💰 <b>Live Price:</b> ${data['price']} | RSI: {data['rsi']} | Trend: {trend}\n🕒 {current_time_ist} IST"
-        send_telegram(msg)
-        print("Update sent")
+        # 4. QUIET UPDATE (Only send a short update every 30 mins to avoid noise)
+        now_min = datetime.now(IST).minute
+        if now_min == 0 or now_min == 30:
+            msg = f"📊 <b>Live Update:</b> ${data['price']} | RSI: {data['rsi']} | Trend: {'UP' if data['price'] > data['sma50'] else 'DOWN'}\n🕒 {current_time_ist} IST"
+            send_telegram(msg)
+            print("30-min update sent")
+        else:
+            print("No signal. Bot sleeping.")
 
 if __name__ == "__main__":
     main()
