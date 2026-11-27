@@ -18,11 +18,9 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def get_data(interval="5m", period="1mo"):
-    # Changed period to 1mo to ensure we get enough data
-    df = yf.Ticker(SYMBOL).history(period=period, interval=interval).dropna()
-    
-    # Changed requirement from 60 to 20 candles
+def get_data():
+    # Using 1-Hour interval for maximum stability
+    df = yf.Ticker(SYMBOL).history(period="1mo", interval="1h").dropna()
     if len(df) < 20:
         return None
     
@@ -51,62 +49,46 @@ def get_data(interval="5m", period="1mo"):
         "time": df.index[-1].strftime("%Y-%m-%d %H:%M UTC")
     }
 
-def get_hourly_trend():
-    df = yf.Ticker(SYMBOL).history(period="1mo", interval="1h").dropna()
-    if len(df) < 50:
+def get_daily_trend():
+    df = yf.Ticker(SYMBOL).history(period="3mo", interval="1d").dropna()
+    if len(df) < 20:
         return "NEUTRAL"
     df["SMA20"] = df["Close"].rolling(20).mean()
     price = float(df["Close"].iloc[-1])
     sma = float(df["SMA20"].iloc[-1])
     return "BULLISH" if price > sma else "BEARISH"
 
-def generate_signal(data_5m, hourly_trend):
-    p = data_5m["price"]
-    rsi = data_5m["rsi"]
-    sma20 = data_5m["sma20"]
-    sma50 = data_5m["sma50"]
-    atr = data_5m["atr"]
-    sup = data_5m["support"]
-    res = data_5m["resistance"]
+def generate_signal(data, daily_trend):
+    p = data["price"]
+    rsi = data["rsi"]
+    sma20 = data["sma20"]
+    sma50 = data["sma50"]
+    atr = data["atr"]
+    sup = data["support"]
+    res = data["resistance"]
     
     if atr <= 0:
         return None
     
-    if p > sma20 > sma50 and 45 <= rsi <= 65 and hourly_trend == "BULLISH":
+    # BUY Signal
+    if p > sma20 and rsi < 60 and daily_trend == "BULLISH":
         sl = round(p - 1.5 * atr, 2)
         tp1 = round(p + 2 * atr, 2)
-        tp2 = round(p + 3.5 * atr, 2)
+        tp2 = round(p + 3 * atr, 2)
         rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0:
-            return {"type": "🟢 BUY — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"5m + 1H bullish alignment. RSI {rsi}"}
+        if rr >= 1.5:
+            return {"type": "🟢 BUY", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"1H Trend Bullish. RSI {rsi}. Support: {sup}"}
     
-    if p < sma20 < sma50 and 35 <= rsi <= 55 and hourly_trend == "BEARISH":
+    # SELL Signal
+    if p < sma20 and rsi > 40 and daily_trend == "BEARISH":
         sl = round(p + 1.5 * atr, 2)
         tp1 = round(p - 2 * atr, 2)
-        tp2 = round(p - 3.5 * atr, 2)
+        tp2 = round(p - 3 * atr, 2)
         rr = (p - tp2) / (sl - p)
-        if rr >= 2.0:
-            return {"type": "🔴 SELL — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"5m + 1H bearish alignment. RSI {rsi}"}
-    
-    if p <= sup * 1.003 and rsi < 35 and hourly_trend != "BEARISH":
-        sl = round(sup - 0.8 * atr, 2)
-        tp1 = round((sup + res) / 2, 2)
-        tp2 = round(res, 2)
-        rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0:
-            return {"type": "🟢 BUY — Support Bounce", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"Near support ${sup}. Oversold RSI {rsi}"}
-    
-    if p >= res * 0.997 and rsi > 65 and hourly_trend != "BULLISH":
-        sl = round(res + 0.8 * atr, 2)
-        tp1 = round((sup + res) / 2, 2)
-        tp2 = round(sup, 2)
-        rr = (p - tp2) / (sl - p)
-        if rr >= 2.0:
-            return {"type": "🔴 SELL — Resistance Reject", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
-                    "reason": f"Near resistance ${res}. Overbought RSI {rsi}"}
+        if rr >= 1.5:
+            return {"type": "🔴 SELL", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"1H Trend Bearish. RSI {rsi}. Resistance: {res}"}
     
     return None
 
@@ -115,11 +97,13 @@ def check_session_alerts():
     hour = now.hour
     minute = now.minute
     
+    # London Open Alert (1:15 PM IST)
     if hour == 7 and 45 <= minute <= 50:
-        return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 15 minutes until London market opens (1:30 PM IST)\n\n📋 Checklist:\n✅ Check economic calendar for GBP/EUR news\n✅ Review overnight price action\n✅ Identify key support/resistance levels\n✅ Be ready for volatility spike\n\n💡 London session = High liquidity, big moves possible"
+        return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 15 mins to London Open (1:30 PM IST)\n\n📋 Checklist:\n✅ Check GBP/EUR news\n✅ Review overnight levels\n✅ Get ready for volatility!"
     
+    # NY Open Alert (6:15 PM IST)
     if hour == 12 and 45 <= minute <= 50:
-        return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 15 minutes until NY market opens (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news (NFP, CPI, Fed speeches)\n✅ Review London session trend\n✅ Identify key levels for NY overlap\n✅ Highest volatility time (6:30-10:30 PM IST)\n\n💡 London+NY overlap = Best trading opportunities"
+        return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 15 mins to NY Open (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news\n✅ Review London trend\n✅ Highest volatility time!"
     
     return None
 
@@ -132,21 +116,21 @@ def main():
         print("Session alert sent")
         return
     
-    data_5m = get_data("5m", "1mo")
-    if not data_5m:
-        send_telegram("⚠️ Gold bot: no market data")
+    data = get_data()
+    if not data:
+        print("No market data available right now.")
         return
     
-    hourly_trend = get_hourly_trend()
-    signal = generate_signal(data_5m, hourly_trend)
+    daily_trend = get_daily_trend()
+    signal = generate_signal(data, daily_trend)
     
     if signal:
         msg = f"""
-🟡 <b>XAU/USD SIGNAL</b>
+🟡 <b>XAU/USD SIGNAL (1H Timeframe)</b>
 
-📌 <b>Current running price:</b> ${data_5m['price']}
-🕒 Data time: {data_5m['time']}
-📊 1H Trend: {hourly_trend}
+📌 <b>Current Price:</b> ${data['price']}
+🕒 Data Time: {data['time']}
+📊 Daily Trend: {daily_trend}
 
 {signal['type']}
 
@@ -156,21 +140,14 @@ def main():
 🎯 <b>TP2:</b> ${signal['tp2']}
 ⚖️ <b>R:R:</b> 1:{signal['rr']}
 
-📊 RSI: {data_5m['rsi']}
-📈 SMA20: {data_5m['sma20']}
-📉 SMA50: {data_5m['sma50']}
-🧱 Support: {data_5m['support']}
-🧱 Resistance: {data_5m['resistance']}
-
 💡 {signal['reason']}
 
-⚠️ Confirm with your TradingView live price.
-⚠️ Risk 1-2% only. Not financial advice.
+⚠️ Confirm with TradingView. Risk 1-2%.
 """
         send_telegram(msg)
         print("Signal sent")
     else:
-        print(f"No signal. Price: ${data_5m['price']} | 1H: {hourly_trend} | RSI: {data_5m['rsi']}")
+        print(f"No signal. Price: ${data['price']} | Daily: {daily_trend}")
 
 if __name__ == "__main__":
     main()
