@@ -151,7 +151,7 @@ def generate_perfect_signal(data):
                     "rr": round((p - tp2) / risk, 2), "reason": f"Strong Downtrend. RSI {rsi}."}
     return None
 
-# --- 2. AGGRESSIVE SIGNAL (Fallback for 30-min updates) ---
+# --- 2. AGGRESSIVE SIGNAL (Fallback) ---
 def generate_aggressive_signal(data):
     p = data["price"]; ema9 = data["ema9"]; atr = data["atr"]
     
@@ -183,8 +183,10 @@ def main():
         data = build_indicators(df)
         if data:
             trend = "UP" if data['price'] > data['sma50'] else "DOWN"
-            msg = f"💰 <b>REAL-TIME PRICE:</b> ${data['price']}\n🕒 Time: {current_time_ist} IST\n📊 RSI: {data['rsi']} | Trend: {trend}"
+            msg = f"💰 <b>REAL-TIME PRICE:</b> ${data['price']}\n🕒 Time: {current_time_ist} IST\n📊 RSI: {data['rsi']} | Trend: {trend}\n🧱 Support: ${data['support']}\n🧱 Resistance: ${data['resistance']}"
             send_telegram(msg)
+        else:
+            send_telegram("⚠️ Could not fetch live data right now.")
         return
 
     # 2. FUNDAMENTAL ALERTS
@@ -197,7 +199,9 @@ def main():
     # 3. GET DATA
     df = get_realtime_data()
     data = build_indicators(df)
+    
     if not data:
+        send_telegram("⚠️ <b>BOT ALERT:</b> Market data unavailable. Waiting for next run.")
         print("No valid data available.")
         return
 
@@ -223,9 +227,10 @@ def main():
         send_telegram(msg)
         print("Perfect signal sent")
         
-    # 5. 30-MINUTE AGGRESSIVE UPDATE
+    # 5. 30-MINUTE GUARANTEED UPDATE (Wide window: :00-:09 and :30-:39)
     elif now_min < 10 or (30 <= now_min < 40):
         agg_signal = generate_aggressive_signal(data)
+        
         if agg_signal:
             msg = f"""⚡ <b>XAU/USD 30-MIN SCALP</b>
 
@@ -243,6 +248,22 @@ def main():
 ⚠️ AGGRESSIVE SCALP. Quick book profits."""
             send_telegram(msg)
             print("Aggressive 30-min signal sent")
+        else:
+            # GUARANTEE: If no aggressive signal, send Market Status
+            trend = "UP" if data['price'] > data['sma50'] else "DOWN"
+            msg = f"""📊 <b>XAU/USD MARKET STATUS</b>
+
+💰 <b>Live Price:</b> ${data['price']}
+📈 Trend: {trend}
+📊 RSI: {data['rsi']}
+
+🧱 Support: ${data['support']}
+🧱 Resistance: ${data['resistance']}
+🕒 Time: {current_time_ist} IST
+
+💡 Market is consolidating. No clear scalp setup right now."""
+            send_telegram(msg)
+            print("30-min market status sent")
     else:
         print("No signal. Bot sleeping.")
 
