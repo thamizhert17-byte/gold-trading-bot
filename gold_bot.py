@@ -18,9 +18,12 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def get_data(interval="5m", period="5d"):
+def get_data(interval="5m", period="1mo"):
+    # Changed period to 1mo to ensure we get enough data
     df = yf.Ticker(SYMBOL).history(period=period, interval=interval).dropna()
-    if len(df) < 60:
+    
+    # Changed requirement from 60 to 20 candles
+    if len(df) < 20:
         return None
     
     df["SMA20"] = df["Close"].rolling(20).mean()
@@ -129,7 +132,7 @@ def main():
         print("Session alert sent")
         return
     
-    data_5m = get_data("5m", "5d")
+    data_5m = get_data("5m", "1mo")
     if not data_5m:
         send_telegram("⚠️ Gold bot: no market data")
         return
