@@ -1,143 +1,42 @@
 import os
 import requests
 import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime
 
-# ===== SET TO "true" TO TEST, "false" FOR PRODUCTION =====
-TEST_MODE = "true"
-
+# Get your secrets from GitHub
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-SYMBOL = "XAUUSD=X"
 
-def send_telegram(message):
+def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    data = {"chat_id": CHAT_ID, "text": text}
     try:
-        r = requests.post(url, data=payload, timeout=15)
-        print(f"Telegram: {r.status_code}")
+        r = requests.post(url, data=data, timeout=10)
+        # This prints the result in the GitHub log so we can debug
+        print(f"Telegram API Response: {r.status_code} - {r.text}") 
     except Exception as e:
-        print(f"Telegram error: {e}")
-
-def get_data(interval="5m", period="5d"):
-    df = yf.Ticker(SYMBOL).history(period=period, interval=interval).dropna()
-    if len(df) < 60:
-        return None
-    df["SMA20"] = df["Close"].rolling(20).mean()
-    df["SMA50"] = df["Close"].rolling(50).mean()
-    delta = df["Close"].diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    df["RSI"] = 100 - (100 / (1 + gain / loss))
-    high_low = df["High"] - df["Low"]
-    high_close = np.abs(df["High"] - df["Close"].shift())
-    low_close = np.abs(df["Low"] - df["Close"].shift())
-    df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
-    recent = df.tail(50)
-    return {
-        "price": round(float(df["Close"].iloc[-1]), 2),
-        "sma20": round(float(df["SMA20"].iloc[-1]), 2),
-        "sma50": round(float(df["SMA50"].iloc[-1]), 2),
-        "rsi": round(float(df["RSI"].iloc[-1]), 2),
-        "atr": round(float(df["ATR"].iloc[-1]), 2),
-        "support": round(float(recent["Low"].min()), 2),
-        "resistance": round(float(recent["High"].max()), 2),
-        "time": df.index[-1].strftime("%Y-%m-%d %H:%M UTC")
-    }
-
-def get_hourly_trend():
-    df = yf.Ticker(SYMBOL).history(period="1mo", interval="1h").dropna()
-    if len(df) < 50:
-        return "NEUTRAL"
-    df["SMA20"] = df["Close"].rolling(20).mean()
-    price = float(df["Close"].iloc[-1])
-    sma = float(df["SMA20"].iloc[-1])
-    return "BULLISH" if price > sma else "BEARISH"
-
-def generate_signal(data_5m, hourly_trend):
-    p = data_5m["price"]; rsi = data_5m["rsi"]; sma20 = data_5m["sma20"]
-    sma50 = data_5m["sma50"]; atr = data_5m["atr"]; sup = data_5m["support"]; res = data_5m["resistance"]
-    if atr <= 0:
-        return None
-    hour = datetime.now(timezone.utc).hour
-    if TEST_MODE != "true" and not (13 <= hour <= 21):
-        print(f"Outside trading hours: {hour} UTC")
-        return None
-    if p > sma20 > sma50 and 45 <= rsi <= 65 and hourly_trend == "BULLISH":
-        sl = round(p - 1.5 * atr, 2); tp1 = round(p + 2 * atr, 2); tp2 = round(p + 3.5 * atr, 2)
-        rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0:
-            return {"type": "🟢 BUY — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"5m + 1H bullish alignment. RSI {rsi}"}
-    if p < sma20 < sma50 and 35 <= rsi <= 55 and hourly_trend == "BEARISH":
-        sl = round(p + 1.5 * atr, 2); tp1 = round(p - 2 * atr, 2); tp2 = round(p - 3.5 * atr, 2)
-        rr = (p - tp2) / (sl - p)
-        if rr >= 2.0:
-            return {"type": "🔴 SELL — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"5m + 1H bearish alignment. RSI {rsi}"}
-    if p <= sup * 1.003 and rsi < 35 and hourly_trend != "BEARISH":
-        sl = round(sup - 0.8 * atr, 2); tp1 = round((sup + res) / 2, 2); tp2 = round(res, 2)
-        rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0:
-            return {"type": "🟢 BUY — Support Bounce", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"Near support ${sup}. Oversold RSI {rsi}"}
-    if p >= res * 0.997 and rsi > 65 and hourly_trend != "BULLISH":
-        sl = round(res + 0.8 * atr, 2); tp1 = round((sup + res) / 2, 2); tp2 = round(sup, 2)
-        rr = (p - tp2) / (sl - p)
-        if rr >= 2.0:
-            return {"type": "🔴 SELL — Resistance Reject", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2), "reason": f"Near resistance ${res}. Overbought RSI {rsi}"}
-    return None
+        print(f"Network Error: {e}")
 
 def main():
-    print("Gold bot starting...")
-    data_5m = get_data("5m", "5d")
-    if not data_5m:
-        send_telegram("⚠️ Gold bot: no market data")
-        return
-    hourly_trend = get_hourly_trend()
-    signal = generate_signal(data_5m, hourly_trend)
-    if signal:
-        msg = f"""🟡 <b>XAU/USD SIGNAL</b>
+    print("🚀 Starting Test Bot...")
+    
+    # TEST 1: Simple connection check
+    send_telegram("🚀 TEST 1: Your Gold Bot is connected to Telegram!")
+    
+    # TEST 2: Fetch live price
+    try:
+        ticker = yf.Ticker("XAUUSD=X")
+        df = ticker.history(period="1d")
+        
+        if not df.empty:
+            price = df['Close'].iloc[-1]
+            send_telegram(f"📊 TEST 2: Live Gold Price is ${price:.2f}")
+        else:
+            send_telegram("❌ TEST 2: Could not fetch price data.")
+    except Exception as e:
+        send_telegram(f"❌ TEST 2 Error: {e}")
 
-📌 <b>Current running price:</b> ${data_5m['price']}
-🕒 Data time: {data_5m['time']}
-📊 1H Trend: {hourly_trend}
-
-{signal['type']}
-
-💰 <b>Entry:</b> ${signal['entry']}
-🛑 <b>Stop Loss:</b> ${signal['sl']}
-🎯 <b>TP1:</b> ${signal['tp1']}
-🎯 <b>TP2:</b> ${signal['tp2']}
-⚖️ <b>R:R:</b> 1:{signal['rr']}
-
-📊 RSI: {data_5m['rsi']}
-📈 SMA20: {data_5m['sma20']}
-📉 SMA50: {data_5m['sma50']}
-🧱 Support: {data_5m['support']}
-🧱 Resistance: {data_5m['resistance']}
-
-💡 {signal['reason']}
-
-⚠️ Confirm with your TradingView live price.
-⚠️ Risk 1-2% only. Not financial advice."""
-        send_telegram(msg)
-        print("Signal sent")
-    elif TEST_MODE == "true":
-        # Heartbeat so you KNOW Telegram delivery works, even with no setup
-        msg = f"""🤖 <b>Bot Test Heartbeat</b>
-
-✅ Telegram delivery is WORKING.
-📌 Current running price: ${data_5m['price']}
-🕒 Data time: {data_5m['time']}
-📊 1H Trend: {hourly_trend}
-📊 RSI: {data_5m['rsi']}
-
-No valid setup right now (normal).
-Real signals will fire during 13:00-21:00 UTC (6:30 PM - 2:30 AM IST)."""
-        send_telegram(msg)
-        print("Heartbeat sent")
-    else:
-        print(f"No signal. Price: ${data_5m['price']} | 1H: {hourly_trend} | RSI: {data_5m['rsi']}")
+    print("✅ Test finished.")
 
 if __name__ == "__main__":
     main()
