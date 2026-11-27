@@ -28,7 +28,6 @@ def check_user_commands():
             text = last_msg.get('text', '').strip().lower()
             msg_date = last_msg.get('date', 0)
             current_time = int(datetime.now(timezone.utc).timestamp())
-            # If user typed 'signal' in the last 15 minutes
             if text == 'signal' and (current_time - msg_date) < 900:
                 return True
     except Exception as e:
@@ -36,7 +35,6 @@ def check_user_commands():
     return False
 
 def get_realtime_data():
-    """Fetches real-time 5-min candles from Twelve Data."""
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval=5min&outputsize=100&apikey={API_KEY}"
         r = requests.get(url, timeout=10).json()
@@ -82,35 +80,33 @@ def build_indicators(df):
     }
 
 def check_fundamental_alerts():
-    """Sends alerts at 1:15 PM and 6:15 PM IST."""
     now = datetime.now(IST)
     hour = now.hour
     minute = now.minute
     
-    if hour == 13 and 14 <= minute <= 16: # 1:15 PM IST
-        return "🇬🇧 <b>FUNDAMENTAL ALERT: LONDON OPEN</b>\n\n⏰ London session starts in 15 mins (1:30 PM IST).\n\n📰 Check News:\n✅ GBP & EUR High Impact News\n✅ European Market Openings\n✅ Overnight Gold Volatility\n\n💡 High volatility expected. Tighten SL if trading."
+    if hour == 13 and 14 <= minute <= 16:
+        return "🇬🇧 <b>FUNDAMENTAL ALERT: LONDON OPEN</b>\n\n⏰ London session starts in 15 mins (1:30 PM IST).\n\n📰 Check News:\n✅ GBP & EUR High Impact News\n✅ European Market Openings\n\n💡 High volatility expected."
     
-    if hour == 18 and 14 <= minute <= 16: # 6:15 PM IST
-        return "🇺🇸 <b>FUNDAMENTAL ALERT: NEW YORK OPEN</b>\n\n⏰ NY session starts in 15 mins (6:30 PM IST).\n\n📰 Check News:\n✅ USD High Impact News (NFP, CPI, Fed)\n✅ US Stock Market Open (S&P 500)\n✅ Gold/USD Correlation\n\n💡 Highest volatility of the day (6:30 PM - 10:30 PM IST)."
+    if hour == 18 and 14 <= minute <= 16:
+        return "🇺🇸 <b>FUNDAMENTAL ALERT: NEW YORK OPEN</b>\n\n⏰ NY session starts in 15 mins (6:30 PM IST).\n\n📰 Check News:\n✅ USD High Impact News (NFP, CPI, Fed)\n✅ US Stock Market Open\n\n💡 Highest volatility of the day."
     
     return None
 
 def generate_perfect_signal(data):
-    """Strict logic to ensure only 3-8 high-quality signals per day."""
     p = data["price"]; ema9 = data["ema9"]; ema21 = data["ema21"]
     sma50 = data["sma50"]; rsi = data["rsi"]; atr = data["atr"]
     sup = data["support"]; res = data["resistance"]
     
-    if atr <= 0 or atr > 15: # Filter out dead markets or crazy spikes
+    if atr <= 0 or atr > 15:
         return None
 
-    # 1. TREND FOLLOWING (Best for London/NY Overlap)
+    # 1. TREND FOLLOWING
     if p > ema21 > sma50 and ema9 > ema21 and 45 < rsi < 70:
         sl = round(p - 1.5 * atr, 2)
         tp1 = round(p + 2 * atr, 2)
         tp2 = round(p + 3.5 * atr, 2)
         rr = (tp2 - p) / (p - sl)
-        if rr >= 2.0: # Strict R:R
+        if rr >= 2.0:
             return {"type": "🟢 BUY (UpTrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
                     "rr": round(rr, 2), "reason": f"Strong Uptrend. RSI {rsi}."}
 
@@ -120,15 +116,15 @@ def generate_perfect_signal(data):
         tp2 = round(p - 3.5 * atr, 2)
         rr = (p - tp2) / (sl - p)
         if rr >= 2.0:
-            return {"type": "🔴 SELL (DownTrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+            return {"type": "🔴 SELL (Downtrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
                     "rr": round(rr, 2), "reason": f"Strong Downtrend. RSI {rsi}."}
 
-    # 2. REVERSAL (Best for Asian Session or Range-bound markets)
+    # 2. REVERSAL
     if p <= sup * 1.002 and rsi < 30 and p > sma50:
         sl = round(sup - 0.5 * atr, 2)
         tp1 = round((sup + res) / 2, 2); tp2 = round(res, 2)
         rr = (tp2 - p) / (p - sl)
-        if rr >= 2.5: # Higher R:R for reversals
+        if rr >= 2.5:
             return {"type": "🟢 BUY (Reversal)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
                     "rr": round(rr, 2), "reason": f"Oversold at Support ${sup}."}
 
@@ -146,7 +142,7 @@ def main():
     print("Gold Bot Master Plan Active...")
     current_time_ist = datetime.now(IST).strftime("%I:%M %p")
 
-    # 1. USER COMMAND: "signal"
+    # 1. USER COMMAND
     if check_user_commands():
         df = get_realtime_data()
         data = build_indicators(df)
@@ -155,7 +151,7 @@ def main():
             send_telegram(msg)
         return
 
-    # 2. FUNDAMENTAL ALERTS (1:15 PM & 6:15 PM IST)
+    # 2. FUNDAMENTAL ALERTS
     alert = check_fundamental_alerts()
     if alert:
         send_telegram(alert)
@@ -189,7 +185,7 @@ def main():
         send_telegram(msg)
         print("Perfect signal sent")
     else:
-        # 4. QUIET UPDATE (Only send a short update every 30 mins to avoid noise)
+        # 4. QUIET UPDATE (Only at :00 and :30 to prevent spam)
         now_min = datetime.now(IST).minute
         if now_min == 0 or now_min == 30:
             msg = f"📊 <b>Live Update:</b> ${data['price']} | RSI: {data['rsi']} | Trend: {'UP' if data['price'] > data['sma50'] else 'DOWN'}\n🕒 {current_time_ist} IST"
