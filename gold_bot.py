@@ -18,8 +18,21 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+def check_user_commands():
+    """Checks if the user typed 'signal' in the bot recently"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    try:
+        r = requests.get(url, timeout=10).json()
+        if r.get('ok') and r.get('result'):
+            last_msg = r['result'][-1].get('message', {})
+            text = last_msg.get('text', '').strip().lower()
+            if text == 'signal':
+                return True
+    except Exception as e:
+        print(f"Command check error: {e}")
+    return False
+
 def get_data():
-    # Using 1-Hour interval for maximum stability
     df = yf.Ticker(SYMBOL).history(period="1mo", interval="1h").dropna()
     if len(df) < 20:
         return None
@@ -62,7 +75,6 @@ def generate_signal(data, daily_trend):
     p = data["price"]
     rsi = data["rsi"]
     sma20 = data["sma20"]
-    sma50 = data["sma50"]
     atr = data["atr"]
     sup = data["support"]
     res = data["resistance"]
@@ -70,7 +82,6 @@ def generate_signal(data, daily_trend):
     if atr <= 0:
         return None
     
-    # BUY Signal
     if p > sma20 and rsi < 60 and daily_trend == "BULLISH":
         sl = round(p - 1.5 * atr, 2)
         tp1 = round(p + 2 * atr, 2)
@@ -80,7 +91,6 @@ def generate_signal(data, daily_trend):
             return {"type": "🟢 BUY", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
                     "reason": f"1H Trend Bullish. RSI {rsi}. Support: {sup}"}
     
-    # SELL Signal
     if p < sma20 and rsi > 40 and daily_trend == "BEARISH":
         sl = round(p + 1.5 * atr, 2)
         tp1 = round(p - 2 * atr, 2)
@@ -97,31 +107,42 @@ def check_session_alerts():
     hour = now.hour
     minute = now.minute
     
-    # London Open Alert (1:15 PM IST)
-    if hour == 7 and 45 <= minute <= 50:
-        return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 15 mins to London Open (1:30 PM IST)\n\n📋 Checklist:\n✅ Check GBP/EUR news\n✅ Review overnight levels\n✅ Get ready for volatility!"
+    if hour == 7 and minute == 30:
+        return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 30 mins to London Open (1:30 PM IST)\n\n📋 Checklist:\n✅ Check GBP/EUR news\n✅ Review overnight levels\n✅ Get ready for volatility!"
     
-    # NY Open Alert (6:15 PM IST)
-    if hour == 12 and 45 <= minute <= 50:
-        return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 15 mins to NY Open (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news\n✅ Review London trend\n✅ Highest volatility time!"
+    if hour == 12 and minute == 30:
+        return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 30 mins to NY Open (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news\n✅ Review London trend\n✅ Highest volatility time!"
     
     return None
 
 def main():
     print("Gold bot starting...")
     
+    # 1. Check for scheduled session alerts
     session_alert = check_session_alerts()
     if session_alert:
         send_telegram(session_alert)
         print("Session alert sent")
         return
     
+    # 2. Check if user typed "signal" in Telegram
+    if check_user_commands():
+        data = get_data()
+        if data:
+            msg = f"🤖 <b>Bot Status: ALIVE</b>\n\n📌 <b>Current Live Price:</b> ${data['price']}\n📊 Daily Trend: {get_daily_trend()}\n🕒 Data Time: {data['time']}\n\n✅ System is working perfectly."
+            send_telegram(msg)
+            print("User command 'signal' processed")
+        return
+    
+    # 3. Get market data for auto-updates
     data = get_data()
     if not data:
         print("No market data available right now.")
         return
     
     daily_trend = get_daily_trend()
+    
+    # 4. Check for trading signals
     signal = generate_signal(data, daily_trend)
     
     if signal:
@@ -147,7 +168,22 @@ def main():
         send_telegram(msg)
         print("Signal sent")
     else:
-        print(f"No signal. Price: ${data['price']} | Daily: {daily_trend}")
+        # 5. Send regular 30-minute price update
+        msg = f"""
+📊 <b>XAU/USD UPDATE</b>
+
+📌 <b>Current Price:</b> ${data['price']}
+📈 SMA20: {data['sma20']}
+📉 SMA50: {data['sma50']}
+📊 RSI: {data['rsi']}
+🧱 Support: {data['support']}
+🧱 Resistance: {data['resistance']}
+📊 Daily Trend: {daily_trend}
+
+⏰ Time: {data['time']}
+"""
+        send_telegram(msg)
+        print("Price update sent")
 
 if __name__ == "__main__":
     main()
