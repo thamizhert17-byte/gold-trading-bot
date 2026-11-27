@@ -111,7 +111,7 @@ def generate_perfect_signal(data):
         tp2 = round(p + 3.5 * atr, 2)
         rr = (tp2 - p) / (p - sl)
         if rr >= 2.0: # Strict R:R
-            return {"type": "🟢 BUY (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+            return {"type": "🟢 BUY (UpTrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
                     "rr": round(rr, 2), "reason": f"Strong Uptrend. RSI {rsi}."}
 
     if p < ema21 < sma50 and ema9 < ema21 and 30 < rsi < 55:
@@ -120,7 +120,7 @@ def generate_perfect_signal(data):
         tp2 = round(p - 3.5 * atr, 2)
         rr = (p - tp2) / (sl - p)
         if rr >= 2.0:
-            return {"type": "🔴 SELL (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+            return {"type": "🔴 SELL (DownTrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
                     "rr": round(rr, 2), "reason": f"Strong Downtrend. RSI {rsi}."}
 
     # 2. REVERSAL (Best for Asian Session or Range-bound markets)
