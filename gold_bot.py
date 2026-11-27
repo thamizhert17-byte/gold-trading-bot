@@ -33,29 +33,40 @@ def check_user_commands():
     return False
 
 def get_live_price():
-    """Gets the absolute latest live price using 1-minute data"""
-    df = yf.Ticker(SYMBOL).history(period='2d', interval='1m').dropna()
-    if df.empty:
-        return None
-    return round(float(df['Close'].iloc[-1]), 2)
+    """Gets the absolute latest live price using a direct API to avoid Yahoo cache"""
+    try:
+        # Direct API for live price (bypasses Yahoo cache)
+        r = requests.get("https://api.gold-api.com/price/XAU", timeout=5).json()
+        if 'price' in r and r['price'] > 0:
+            return round(float(r['price']), 2)
+    except:
+        pass
+    
+    # Fallback: Use yfinance download method (often fresher than .history)
+    try:
+        df = yf.download('GC=F', period='1d', interval='1m', progress=False)
+        if not df.empty:
+            return round(float(df['Close'].iloc[-1]), 2)
+    except:
+        pass
+        
+    return None
 
 def get_15m_data():
     """Gets 15-minute data for efficient entry signals"""
-    df = yf.Ticker(SYMBOL).history(period='10d', interval='15m').dropna()
+    # Using download() instead of history() to avoid cache issues
+    df = yf.download(SYMBOL, period='10d', interval='15m', progress=False).dropna()
     if len(df) < 50:
         return None
     
-    # EMAs for fast trend
     df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
     df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
     
-    # RSI for momentum
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = -delta.where(delta < 0, 0).rolling(14).mean()
     df['RSI'] = 100 - (100 / (1 + gain / loss))
     
-    # ATR for Stop Loss and Targets
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -80,7 +91,6 @@ def generate_efficient_signal(data):
     if atr <= 0:
         return None
 
-    # Efficient BUY Setup: EMA9 crosses above EMA21 + RSI confirmation
     if ema9 > ema21 and p > ema9 and 50 < rsi < 75:
         sl = round(p - (1.5 * atr), 2)
         tp1 = round(p + (2.0 * atr), 2)
@@ -89,7 +99,6 @@ def generate_efficient_signal(data):
         if rr >= 1.5:
             return {"type": "🟢 BUY", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2)}
     
-    # Efficient SELL Setup: EMA9 crosses below EMA21 + RSI confirmation
     if ema9 < ema21 and p < ema9 and 25 < rsi < 50:
         sl = round(p + (1.5 * atr), 2)
         tp1 = round(p - (2.0 * atr), 2)
@@ -102,15 +111,18 @@ def generate_efficient_signal(data):
 
 def main():
     print("Gold bot starting...")
-    current_time_ist = datetime.now(IST).strftime("%I:%M %p")
+    # This gets the EXACT current time in IST when the bot runs
+    current_time_ist = datetime.now(IST).strftime("%I:%M %p") 
     
     # 1. Check if user typed "signal"
     if check_user_commands():
         price = get_live_price()
         if price:
-            msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 Time: {current_time_ist} IST"
+            msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 <b>Live Time:</b> {current_time_ist} IST"
             send_telegram(msg)
             print("Manual price check sent")
+        else:
+            send_telegram("⚠️ Could not fetch live price right now.")
         return
     
     # 2. Check for 15m Trading Signals
@@ -133,6 +145,7 @@ def main():
 ⚖️ <b>R:R:</b> 1:{signal['rr']}
 
 📊 RSI: {data['rsi']} | 15m Trend Active
+🕒 <b>Time:</b> {current_time_ist} IST
 ⚠️ Confirm with TradingView. Risk 1-2%.
 """
         send_telegram(msg)
@@ -141,9 +154,11 @@ def main():
         # 3. No signal? Just send the exact current live price
         price = get_live_price()
         if price:
-            msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 Time: {current_time_ist} IST"
+            msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 <b>Live Time:</b> {current_time_ist} IST"
             send_telegram(msg)
             print("Auto price update sent")
+        else:
+            print("No signal and could not fetch live price.")
 
 if __name__ == "__main__":
     main()
