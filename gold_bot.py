@@ -1,13 +1,13 @@
 import os
 import requests
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-SYMBOL = "GC=F"
+API_KEY = os.environ.get("TWELVE_DATA_API")
+SYMBOL = "XAU/USD"
 IST = timezone(timedelta(hours=5, minutes=30))
 
 def send_telegram(message):
@@ -28,113 +28,144 @@ def check_user_commands():
             text = last_msg.get('text', '').strip().lower()
             msg_date = last_msg.get('date', 0)
             current_time = int(datetime.now(timezone.utc).timestamp())
-            if text == 'signal' and (current_time - msg_date) < 2100:
+            # If message is 'signal' and was sent in the last 15 minutes
+            if text == 'signal' and (current_time - msg_date) < 900:
                 return True
     except Exception as e:
         print(f"Command check error: {e}")
     return False
 
-def get_live_price():
-    """Fast price check using API only. No heavy downloads."""
+def get_realtime_quote():
+    """Real-time price from Twelve Data."""
     try:
-        r = requests.get("https://api.gold-api.com/price/XAU", timeout=5).json()
-        if 'price' in r and r['price'] > 0:
-            return round(float(r['price']), 2)
-    except:
-        pass
+        url = f"https://api.twelvedata.com/quote?symbol={SYMBOL}&apikey={API_KEY}"
+        r = requests.get(url, timeout=10).json()
+        if 'close' in r and float(r['close']) > 0:
+            return {
+                "price": round(float(r['close']), 2),
+                "open": round(float(r['open']), 2),
+                "high": round(float(r['high']), 2),
+                "low": round(float(r['low']), 2)
+            }
+    except Exception as e:
+        print(f"Quote error: {e}")
     return None
 
-def get_15m_data():
-    """Gets 15-minute data. This is fast and reliable."""
+def get_time_series():
+    """Real-time 5-minute candles."""
     try:
-        df = yf.download(SYMBOL, period='5d', interval='15m', progress=False, timeout=10).dropna()
-        if len(df) < 20:
-            return None
-        
-        df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
-        df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['SMA50'] = df['Close'].rolling(50).mean()
-        
-        delta = df['Close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = -delta.where(delta < 0, 0).rolling(14).mean()
-        df['RSI'] = 100 - (100 / (1 + gain / loss))
-        
-        high_low = df['High'] - df['Low']
-        high_close = np.abs(df['High'] - df['Close'].shift())
-        low_close = np.abs(df['Low'] - df['Close'].shift())
-        df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
-        
-        latest = df.iloc[-1]
-        return {
-            "price": round(float(latest['Close']), 2),
-            "ema9": round(float(latest['EMA9']), 2),
-            "ema21": round(float(latest['EMA21']), 2),
-            "sma50": round(float(latest['SMA50']), 2),
-            "rsi": round(float(latest['RSI']), 2),
-            "atr": round(float(latest['ATR']), 2)
-        }
+        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval=5min&outputsize=100&apikey={API_KEY}"
+        r = requests.get(url, timeout=10).json()
+        if 'values' in r:
+            df = pd.DataFrame(r['values'])
+            df = df.rename(columns={'datetime': 'Time'})
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = pd.to_numeric(df[col])
+            df = df.iloc[::-1].reset_index(drop=True)
+            df['Time'] = pd.to_datetime(df['Time'])
+            df = df.set_index('Time')
+            return df
     except Exception as e:
-        print(f"Data error: {e}")
-        return None
+        print(f"Time series error: {e}")
+    return None
 
-def generate_efficient_signal(data):
-    p = data["price"]
-    ema9 = data["ema9"]
-    ema21 = data["ema21"]
-    sma50 = data["sma50"]
-    rsi = data["rsi"]
-    atr = data["atr"]
+def build_indicators(df):
+    if df is None or len(df) < 50:
+        return None
+    df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['SMA50'] = df['close'].rolling(50).mean()
+    
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+    
+    recent = df.tail(50)
+    latest = df.iloc[-1]
+    return {
+        "price": round(float(latest['close']), 2),
+        "ema9": round(float(latest['EMA9']), 2),
+        "ema21": round(float(latest['EMA21']), 2),
+        "sma50": round(float(latest['SMA50']), 2),
+        "rsi": round(float(latest['RSI']), 2),
+        "atr": round(float(latest['ATR']), 2),
+        "support": round(float(recent['low'].min()), 2),
+        "resistance": round(float(recent['high'].max()), 2)
+    }
+
+def generate_signal(data):
+    p = data["price"]; ema9 = data["ema9"]; ema21 = data["ema21"]
+    sma50 = data["sma50"]; rsi = data["rsi"]; atr = data["atr"]
+    sup = data["support"]; res = data["resistance"]
     
     if atr <= 0:
         return None
 
-    # BUY: Strong Uptrend
-    if p > ema21 > sma50 and rsi < 80:
-        sl = round(p - (1.5 * atr), 2)
-        tp1 = round(p + (2.0 * atr), 2)
-        tp2 = round(p + (3.0 * atr), 2)
+    # 1. BUY: Strong uptrend
+    if p > ema21 > sma50 and ema9 > ema21 and rsi < 75:
+        sl = round(p - 1.5 * atr, 2)
+        tp1 = round(p + 2 * atr, 2); tp2 = round(p + 3.5 * atr, 2)
         rr = (tp2 - p) / (p - sl)
         if rr >= 1.5:
-            return {"type": "🟢 BUY (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2)}
-    
-    # SELL: Strong Downtrend
-    if p < ema21 < sma50 and rsi > 20:
-        sl = round(p + (1.5 * atr), 2)
-        tp1 = round(p - (2.0 * atr), 2)
-        tp2 = round(p - (3.0 * atr), 2)
+            return {"type": "🟢 BUY (Uptrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Price > EMA21 > SMA50. RSI {rsi}."}
+
+    # 2. SELL: Strong downtrend
+    if p < ema21 < sma50 and ema9 < ema21 and rsi > 25:
+        sl = round(p + 1.5 * atr, 2)
+        tp1 = round(p - 2 * atr, 2); tp2 = round(p - 3.5 * atr, 2)
         rr = (p - tp2) / (sl - p)
         if rr >= 1.5:
-            return {"type": "🔴 SELL (Trend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2)}
-            
+            return {"type": "🔴 SELL (Downtrend)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Price < EMA21 < SMA50. RSI {rsi}."}
+
+    # 3. BUY: Support bounce
+    if p <= sup * 1.002 and rsi < 35 and p > sma50:
+        sl = round(sup - 0.8 * atr, 2)
+        tp1 = round((sup + res) / 2, 2); tp2 = round(res, 2)
+        rr = (tp2 - p) / (p - sl)
+        if rr >= 2.0:
+            return {"type": "🟢 BUY (Support Bounce)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Oversold at support ${sup}."}
+
+    # 4. SELL: Resistance reject
+    if p >= res * 0.998 and rsi > 65 and p < sma50:
+        sl = round(res + 0.8 * atr, 2)
+        tp1 = round((sup + res) / 2, 2); tp2 = round(sup, 2)
+        rr = (p - tp2) / (sl - p)
+        if rr >= 2.0:
+            return {"type": "🔴 SELL (Resistance Reject)", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2,
+                    "rr": round(rr, 2), "reason": f"Overbought at resistance ${res}."}
+
     return None
 
 def main():
-    print("Gold bot starting...")
-    current_time_ist = datetime.now(IST).strftime("%I:%M %p") 
-    
+    print("Gold bot starting (real-time)...")
+    current_time_ist = datetime.now(IST).strftime("%I:%M %p")
+
     # 1. Check if user typed "signal"
     if check_user_commands():
-        price = get_live_price()
-        # If API fails, we don't hang. We just say checking data.
-        if not price:
-            data = get_15m_data()
-            if data: price = data['price']
-            
-        if price:
-            msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 <b>Live Time:</b> {current_time_ist} IST"
+        quote = get_realtime_quote()
+        if quote:
+            msg = f"💰 <b>REAL-TIME Gold Price:</b> ${quote['price']}\n🕒 Time: {current_time_ist} IST\n📈 High: ${quote['high']} | 📉 Low: ${quote['low']}"
             send_telegram(msg)
-            print("Manual price check sent")
         return
-    
-    # 2. Get 15m Data (Fast & Reliable)
-    data = get_15m_data()
+
+    # 2. Get real-time 5m candles
+    df = get_time_series()
+    data = build_indicators(df)
     if not data:
-        print("No 15m data available.")
+        print("No data available.")
         return
-    
-    # 3. Check for Signals
-    signal = generate_efficient_signal(data)
+
+    # 3. Check for Entry Signals
+    signal = generate_signal(data)
     
     if signal:
         msg = f"""
@@ -142,23 +173,23 @@ def main():
 
 {signal['type']}
 💰 <b>Entry:</b> ${signal['entry']}
-🛑 <b>Stop Loss:</b> ${signal['sl']}
+🛑 <b>SL:</b> ${signal['sl']}
 🎯 <b>TP1:</b> ${signal['tp1']}
 🎯 <b>TP2:</b> ${signal['tp2']}
 ⚖️ <b>R:R:</b> 1:{signal['rr']}
 
-📊 RSI: {data['rsi']} | 15m Trend Active
-🕒 <b>Time:</b> {current_time_ist} IST
-⚠️ Confirm with TradingView. Risk 1-2%.
+📊 RSI: {data['rsi']} | Support: ${data['support']} | Resistance: ${data['resistance']}
+🕒 Time: {current_time_ist} IST
+⚠️ Verify on TradingView. Risk 1-2%.
 """
         send_telegram(msg)
-        print("Trading signal sent")
+        print("Signal sent")
     else:
-        # 4. No signal? Send the price from the 15m data (it's fresh enough)
-        price = data['price']
-        msg = f"💰 <b>Current Gold Price:</b> ${price}\n🕒 <b>Live Time:</b> {current_time_ist} IST"
+        # 4. Quiet 10-min update
+        trend = "UP" if data['price'] > data['sma50'] else "DOWN"
+        msg = f"💰 <b>Live Price:</b> ${data['price']} | RSI: {data['rsi']} | Trend: {trend}\n🕒 {current_time_ist} IST"
         send_telegram(msg)
-        print("Auto price update sent")
+        print("Update sent")
 
 if __name__ == "__main__":
     main()
