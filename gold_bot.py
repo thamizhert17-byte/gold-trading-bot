@@ -1,42 +1,181 @@
 import os
 import requests
 import yfinance as yf
-from datetime import datetime
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
 
-# Get your secrets from GitHub
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+SYMBOL = "GC=F"
 
-def send_telegram(text):
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": text}
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        r = requests.post(url, data=data, timeout=10)
-        # This prints the result in the GitHub log so we can debug
-        print(f"Telegram API Response: {r.status_code} - {r.text}") 
+        r = requests.post(url, data=payload, timeout=15)
+        print(f"Telegram: {r.status_code}")
     except Exception as e:
-        print(f"Network Error: {e}")
+        print(f"Telegram error: {e}")
+
+def get_data(interval="5m", period="5d"):
+    df = yf.Ticker(SYMBOL).history(period=period, interval=interval).dropna()
+    if len(df) < 60:
+        return None
+    
+    df["SMA20"] = df["Close"].rolling(20).mean()
+    df["SMA50"] = df["Close"].rolling(50).mean()
+    
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(14).mean()
+    df["RSI"] = 100 - (100 / (1 + gain / loss))
+    
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
+    df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+    
+    recent = df.tail(50)
+    return {
+        "price": round(float(df["Close"].iloc[-1]), 2),
+        "sma20": round(float(df["SMA20"].iloc[-1]), 2),
+        "sma50": round(float(df["SMA50"].iloc[-1]), 2),
+        "rsi": round(float(df["RSI"].iloc[-1]), 2),
+        "atr": round(float(df["ATR"].iloc[-1]), 2),
+        "support": round(float(recent["Low"].min()), 2),
+        "resistance": round(float(recent["High"].max()), 2),
+        "time": df.index[-1].strftime("%Y-%m-%d %H:%M UTC")
+    }
+
+def get_hourly_trend():
+    df = yf.Ticker(SYMBOL).history(period="1mo", interval="1h").dropna()
+    if len(df) < 50:
+        return "NEUTRAL"
+    df["SMA20"] = df["Close"].rolling(20).mean()
+    price = float(df["Close"].iloc[-1])
+    sma = float(df["SMA20"].iloc[-1])
+    return "BULLISH" if price > sma else "BEARISH"
+
+def generate_signal(data_5m, hourly_trend):
+    p = data_5m["price"]
+    rsi = data_5m["rsi"]
+    sma20 = data_5m["sma20"]
+    sma50 = data_5m["sma50"]
+    atr = data_5m["atr"]
+    sup = data_5m["support"]
+    res = data_5m["resistance"]
+    
+    if atr <= 0:
+        return None
+    
+    hour = datetime.now(timezone.utc).hour
+    minute = datetime.now(timezone.utc).minute
+    
+    if p > sma20 > sma50 and 45 <= rsi <= 65 and hourly_trend == "BULLISH":
+        sl = round(p - 1.5 * atr, 2)
+        tp1 = round(p + 2 * atr, 2)
+        tp2 = round(p + 3.5 * atr, 2)
+        rr = (tp2 - p) / (p - sl)
+        if rr >= 2.0:
+            return {"type": "🟢 BUY — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"5m + 1H bullish alignment. RSI {rsi}"}
+    
+    if p < sma20 < sma50 and 35 <= rsi <= 55 and hourly_trend == "BEARISH":
+        sl = round(p + 1.5 * atr, 2)
+        tp1 = round(p - 2 * atr, 2)
+        tp2 = round(p - 3.5 * atr, 2)
+        rr = (p - tp2) / (sl - p)
+        if rr >= 2.0:
+            return {"type": "🔴 SELL — Trend", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"5m + 1H bearish alignment. RSI {rsi}"}
+    
+    if p <= sup * 1.003 and rsi < 35 and hourly_trend != "BEARISH":
+        sl = round(sup - 0.8 * atr, 2)
+        tp1 = round((sup + res) / 2, 2)
+        tp2 = round(res, 2)
+        rr = (tp2 - p) / (p - sl)
+        if rr >= 2.0:
+            return {"type": "🟢 BUY — Support Bounce", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"Near support ${sup}. Oversold RSI {rsi}"}
+    
+    if p >= res * 0.997 and rsi > 65 and hourly_trend != "BULLISH":
+        sl = round(res + 0.8 * atr, 2)
+        tp1 = round((sup + res) / 2, 2)
+        tp2 = round(sup, 2)
+        rr = (p - tp2) / (sl - p)
+        if rr >= 2.0:
+            return {"type": "🔴 SELL — Resistance Reject", "entry": p, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": round(rr, 2),
+                    "reason": f"Near resistance ${res}. Overbought RSI {rsi}"}
+    
+    return None
+
+def check_session_alerts():
+    """Send alerts before major market sessions open"""
+    now = datetime.now(timezone.utc)
+    hour = now.hour
+    minute = now.minute
+    
+    # London Open Alert: 8:00 AM UTC (1:30 PM IST) - Alert at 7:45 AM UTC
+    if hour == 7 and 45 <= minute <= 50:
+        return "🇬🇧 <b>LONDON SESSION OPENING SOON</b>\n\n⏰ 15 minutes until London market opens (1:30 PM IST)\n\n📋 Checklist:\n✅ Check economic calendar for GBP/EUR news\n✅ Review overnight price action\n✅ Identify key support/resistance levels\n✅ Be ready for volatility spike\n\n💡 London session = High liquidity, big moves possible"
+    
+    # New York Open Alert: 1:00 PM UTC (6:30 PM IST) - Alert at 12:45 PM UTC
+    if hour == 12 and 45 <= minute <= 50:
+        return "🇺🇸 <b>NEW YORK SESSION OPENING SOON</b>\n\n⏰ 15 minutes until NY market opens (6:30 PM IST)\n\n📋 Checklist:\n✅ Check USD news (NFP, CPI, Fed speeches)\n✅ Review London session trend\n✅ Identify key levels for NY overlap\n✅ Highest volatility time (6:30-10:30 PM IST)\n\n💡 London+NY overlap = Best trading opportunities"
+    
+    return None
 
 def main():
-    print("🚀 Starting Test Bot...")
+    print("Gold bot starting...")
     
-    # TEST 1: Simple connection check
-    send_telegram("🚀 TEST 1: Your Gold Bot is connected to Telegram!")
+    # Check for session alerts first
+    session_alert = check_session_alerts()
+    if session_alert:
+        send_telegram(session_alert)
+        print("Session alert sent")
+        return
     
-    # TEST 2: Fetch live price
-    try:
-        ticker = yf.Ticker("XAUUSD=X")
-        df = ticker.history(period="1d")
-        
-        if not df.empty:
-            price = df['Close'].iloc[-1]
-            send_telegram(f"📊 TEST 2: Live Gold Price is ${price:.2f}")
-        else:
-            send_telegram("❌ TEST 2: Could not fetch price data.")
-    except Exception as e:
-        send_telegram(f"❌ TEST 2 Error: {e}")
+    # Get market data
+    data_5m = get_data("5m", "5d")
+    if not data_5m:
+        send_telegram("⚠️ Gold bot: no market data")
+        return
+    
+    hourly_trend = get_hourly_trend()
+    signal = generate_signal(data_5m, hourly_trend)
+    
+    if signal:
+        msg = f"""
+🟡 <b>XAU/USD SIGNAL</b>
 
-    print("✅ Test finished.")
+📌 <b>Current running price:</b> ${data_5m['price']}
+🕒 Data time: {data_5m['time']}
+📊 1H Trend: {hourly_trend}
+
+{signal['type']}
+
+💰 <b>Entry:</b> ${signal['entry']}
+🛑 <b>Stop Loss:</b> ${signal['sl']}
+🎯 <b>TP1:</b> ${signal['tp1']}
+🎯 <b>TP2:</b> ${signal['tp2']}
+⚖️ <b>R:R:</b> 1:{signal['rr']}
+
+📊 RSI: {data_5m['rsi']}
+📈 SMA20: {data_5m['sma20']}
+📉 SMA50: {data_5m['sma50']}
+🧱 Support: {data_5m['support']}
+🧱 Resistance: {data_5m['resistance']}
+
+💡 {signal['reason']}
+
+⚠️ Confirm with your TradingView live price.
+⚠️ Risk 1-2% only. Not financial advice.
+"""
+        send_telegram(msg)
+        print("Signal sent")
+    else:
+        print(f"No signal. Price: ${data_5m['price']} | 1H: {hourly_trend} | RSI: {data_5m['rsi']}")
 
 if __name__ == "__main__":
     main()
