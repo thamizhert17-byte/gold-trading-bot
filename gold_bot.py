@@ -11,21 +11,15 @@ API_KEY = os.environ.get("TWELVE_DATA_API")
 SYMBOL = "XAU/USD"
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# --- TELEGRAM SENDER ---
 def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Error: Missing BOT_TOKEN or CHAT_ID")
-        return
+    if not BOT_TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        r = requests.post(url, data=payload, timeout=15)
-        if r.status_code != 200:
-            print(f"Telegram API Error: {r.text}")
+        requests.post(url, data=payload, timeout=15)
     except Exception as e:
-        print(f"Telegram Network Error: {e}")
+        print(f"Telegram Error: {e}")
 
-# --- COMMAND CHECKER ---
 def check_user_commands():
     if not BOT_TOKEN: return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -38,64 +32,45 @@ def check_user_commands():
             current_time = int(datetime.now(timezone.utc).timestamp())
             if text == 'signal' and (0 < (current_time - msg_date) < 480):
                 return True
-    except Exception as e:
-        print(f"Command check error: {e}")
+    except: pass
     return False
 
-# --- DATA FETCHER ---
 def get_realtime_data():
-    if not API_KEY: 
-        print("Error: Missing TWELVE_DATA_API key")
-        return None
+    if not API_KEY: return None
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval=5min&outputsize=100&apikey={API_KEY}"
         r = requests.get(url, timeout=15).json()
-        
-        if r.get('code') and r.get('code') != 200:
-            print(f"API Error: {r.get('message')}")
-            return None
-            
+        if r.get('code') and r.get('code') != 200: return None
         if 'values' in r and len(r['values']) > 0:
             df = pd.DataFrame(r['values'])
             df = df.rename(columns={'datetime': 'Time'})
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-            
             df = df.iloc[::-1].reset_index(drop=True)
             df['Time'] = pd.to_datetime(df['Time'])
-            df = df.set_index('Time')
-            df = df.dropna()
+            df = df.set_index('Time').dropna()
             return df
-    except Exception as e:
-        print(f"Data fetch error: {e}")
+    except: pass
     return None
 
-# --- INDICATOR BUILDER ---
 def build_indicators(df):
-    if df is None or len(df) < 50:
-        return None
+    if df is None or len(df) < 50: return None
     try:
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
         df['SMA50'] = df['close'].rolling(50).mean()
-        
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = -delta.where(delta < 0, 0).rolling(14).mean()
-        rs = gain / loss.replace(0, np.nan)
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
+        df['RSI'] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
-        
         df = df.dropna()
         if len(df) == 0: return None
-
         recent = df.tail(50)
         latest = df.iloc[-1]
-        
         return {
             "price": round(float(latest['close']), 2),
             "ema9": round(float(latest['EMA9']), 2),
@@ -106,30 +81,21 @@ def build_indicators(df):
             "support": round(float(recent['low'].min()), 2),
             "resistance": round(float(recent['high'].max()), 2)
         }
-    except Exception as e:
-        print(f"Indicator calculation error: {e}")
-        return None
+    except: return None
 
-# --- TIME-BASED ALERTS ---
 def check_fundamental_alerts():
     now = datetime.now(IST)
-    hour = now.hour
-    minute = now.minute
-    
-    if hour == 13 and 10 <= minute <= 20:
-        return "🇬🇧 <b>FUNDAMENTAL ALERT: LONDON OPEN</b>\n\n⏰ London session is active.\n\n📰 Check News:\n✅ GBP & EUR High Impact News\n\n💡 High volatility expected."
-    
-    if hour == 18 and 10 <= minute <= 20:
-        return "🇺🇸 <b>FUNDAMENTAL ALERT: NEW YORK OPEN</b>\n\n⏰ NY session is active.\n\n📰 Check News:\n✅ USD High Impact News\n\n💡 Highest volatility of the day."
-    
+    if now.hour == 13 and 10 <= now.minute <= 20:
+        return "🇬🇧 <b>FUNDAMENTAL ALERT: LONDON OPEN</b>\n\n⏰ London session is active.\n📰 Check GBP/EUR News.\n💡 High volatility expected."
+    if now.hour == 18 and 10 <= now.minute <= 20:
+        return "🇺🇸 <b>FUNDAMENTAL ALERT: NEW YORK OPEN</b>\n\n⏰ NY session is active.\n📰 Check USD News.\n💡 Highest volatility of the day."
     return None
 
-# --- 1. PERFECT SIGNAL (Strict) ---
 def generate_perfect_signal(data):
     p = data["price"]; ema9 = data["ema9"]; ema21 = data["ema21"]
     sma50 = data["sma50"]; rsi = data["rsi"]; atr = data["atr"]
     
-    if atr <= 0 or atr > 20 or np.isnan(rsi):
+    if atr <= 0 or atr < 2.5 or np.isnan(rsi):
         return None
 
     if p > ema21 > sma50 and ema9 > ema21 and 45 < rsi < 70:
@@ -151,65 +117,62 @@ def generate_perfect_signal(data):
                     "rr": round((p - tp2) / risk, 2), "reason": f"Strong Downtrend. RSI {rsi}."}
     return None
 
-# --- 2. AGGRESSIVE SIGNAL (Fallback) ---
-def generate_aggressive_signal(data):
-    p = data["price"]; ema9 = data["ema9"]; atr = data["atr"]
+def generate_guaranteed_scalp(data):
+    """NEVER returns None. Forces a trade signal every 30 mins based on RSI."""
+    p = data["price"]; rsi = data["rsi"]; atr = data["atr"]
     
-    if atr <= 0 or np.isnan(atr): return None
+    # If market is dead (ATR < 2.5), force a minimum $3.00 SL so the trade is usable
+    effective_atr = max(atr, 3.0) 
 
-    if p > ema9:
-        sl = round(p - 1.0 * atr, 2)
-        tp = round(p + 1.5 * atr, 2)
-        return {"type": "⚡ AGGRESSIVE BUY", "entry": p, "sl": sl, "tp1": tp, "tp2": tp,
-                "rr": 1.5, "reason": f"Short-term momentum UP. Scalp setup."}
+    # If RSI > 50, momentum is UP -> BUY
+    if rsi >= 50:
+        sl = round(p - 1.5 * effective_atr, 2)
+        tp = round(p + 2.0 * effective_atr, 2)
+        return {"type": "⚡ SCALP BUY", "entry": p, "sl": sl, "tp1": tp, "tp2": tp,
+                "rr": 1.5, "reason": f"RSI Momentum UP ({rsi}). Scalp setup."}
+    
+    # If RSI < 50, momentum is DOWN -> SELL
+    else:
+        sl = round(p + 1.5 * effective_atr, 2)
+        tp = round(p - 2.0 * effective_atr, 2)
+        return {"type": "⚡ SCALP SELL", "entry": p, "sl": sl, "tp1": tp, "tp2": tp,
+                "rr": 1.5, "reason": f"RSI Momentum DOWN ({rsi}). Scalp setup."}
 
-    if p < ema9:
-        sl = round(p + 1.0 * atr, 2)
-        tp = round(p - 1.5 * atr, 2)
-        return {"type": "⚡ AGGRESSIVE SELL", "entry": p, "sl": sl, "tp1": tp, "tp2": tp,
-                "rr": 1.5, "reason": f"Short-term momentum DOWN. Scalp setup."}
-                
-    return None
-
-# --- MAIN EXECUTION ---
 def main():
-    print("Gold Bot Master Plan Active...")
+    print("Gold Bot Active...")
     current_time_ist = datetime.now(IST).strftime("%I:%M %p")
     now_min = datetime.now(IST).minute
 
-    # 1. USER COMMAND
     if check_user_commands():
         df = get_realtime_data()
         data = build_indicators(df)
         if data:
             trend = "UP" if data['price'] > data['sma50'] else "DOWN"
-            msg = f"💰 <b>REAL-TIME PRICE:</b> ${data['price']}\n🕒 Time: {current_time_ist} IST\n📊 RSI: {data['rsi']} | Trend: {trend}\n🧱 Support: ${data['support']}\n🧱 Resistance: ${data['resistance']}"
+            msg = f"💰 <b>REAL-TIME PRICE:</b> ${data['price']}\n🕒 Time: {current_time_ist} IST\n📊 RSI: {data['rsi']} | Trend: {trend}\n🧱 Sup: ${data['support']} | Res: ${data['resistance']}"
             send_telegram(msg)
-        else:
-            send_telegram("⚠️ Could not fetch live data right now.")
         return
 
-    # 2. FUNDAMENTAL ALERTS
     alert = check_fundamental_alerts()
     if alert:
         send_telegram(alert)
-        print("Fundamental alert sent")
         return
 
-    # 3. GET DATA
     df = get_realtime_data()
     data = build_indicators(df)
-    
-    if not data:
-        send_telegram("⚠️ <b>BOT ALERT:</b> Market data unavailable. Waiting for next run.")
-        print("No valid data available.")
-        return
+    if not data: return
 
-    # 4. CHECK PERFECT SIGNAL
-    signal = generate_perfect_signal(data)
-    
-    if signal:
-        msg = f"""🟡 <b>XAU/USD PERFECT ENTRY</b>
+    # 30-MINUTE GUARANTEED TRADE SIGNAL
+    if now_min < 10 or (30 <= now_min < 40):
+        # 1. Try Perfect Signal first
+        signal = generate_perfect_signal(data)
+        
+        # 2. If no perfect signal, FORCE a Scalp Signal
+        if not signal:
+            signal = generate_guaranteed_scalp(data)
+            
+        # 3. Send the Trade Signal (Always happens at :00 and :30)
+        if signal:
+            msg = f"""🟡 <b>XAU/USD 30-MIN SIGNAL</b>
 
 {signal['type']}
 💰 <b>Entry:</b> ${signal['entry']}
@@ -223,49 +186,13 @@ def main():
 🧱 Resistance: ${data['resistance']}
 🕒 Time: {current_time_ist} IST
 
+💡 {signal['reason']}
 ⚠️ Verify on TradingView. Risk 1-2%."""
-        send_telegram(msg)
-        print("Perfect signal sent")
-        
-    # 5. 30-MINUTE GUARANTEED UPDATE (Wide window: :00-:09 and :30-:39)
-    elif now_min < 10 or (30 <= now_min < 40):
-        agg_signal = generate_aggressive_signal(data)
-        
-        if agg_signal:
-            msg = f"""⚡ <b>XAU/USD 30-MIN SCALP</b>
-
-{agg_signal['type']}
-💰 <b>Entry:</b> ${agg_signal['entry']}
-🛑 <b>SL:</b> ${agg_signal['sl']}
-🎯 <b>TP:</b> ${agg_signal['tp1']}
-⚖️ <b>R:R:</b> 1:{agg_signal['rr']}
-
-📊 RSI: {data['rsi']}
-🧱 Support: ${data['support']}
-🧱 Resistance: ${data['resistance']}
-🕒 Time: {current_time_ist} IST
-
-⚠️ AGGRESSIVE SCALP. Quick book profits."""
             send_telegram(msg)
-            print("Aggressive 30-min signal sent")
-        else:
-            # GUARANTEE: If no aggressive signal, send Market Status
-            trend = "UP" if data['price'] > data['sma50'] else "DOWN"
-            msg = f"""📊 <b>XAU/USD MARKET STATUS</b>
+            print("30-min trade signal sent")
+            return
 
-💰 <b>Live Price:</b> ${data['price']}
-📈 Trend: {trend}
-📊 RSI: {data['rsi']}
-
-🧱 Support: ${data['support']}
-🧱 Resistance: ${data['resistance']}
-🕒 Time: {current_time_ist} IST
-
-💡 Market is consolidating. No clear scalp setup right now."""
-            send_telegram(msg)
-            print("30-min market status sent")
-    else:
-        print("No signal. Bot sleeping.")
+    print("Waiting for next 30-min window...")
 
 if __name__ == "__main__":
     main()
